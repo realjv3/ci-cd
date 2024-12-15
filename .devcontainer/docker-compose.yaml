@@ -6,7 +6,7 @@ services:
       - "../:/home/vscode/go-screener-workflow"
       - "~/.ssh:/home/vscode/.ssh:ro"
   temporal:
-    image: "cgr.dev/chainguard/temporal-admin-tools:latest"
+    image: "temporalio/admin-tools:latest"
     entrypoint: ["temporal", "server", "start-dev"]
     network_mode: "service:workspace"
     command:

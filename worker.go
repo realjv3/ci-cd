@@ -38,8 +38,12 @@ func RunWorker(ctx context.Context) error {
 
 	pa := pipeline.PipelineActivity{}
 	worker.RegisterActivity(pa.GitClone)
+	worker.RegisterActivity(pa.GoGen)
+	worker.RegisterActivity(pa.GoBuild)
 	worker.RegisterActivity(pa.GoTest)
 	worker.RegisterActivity(pa.GoFmt)
+	worker.RegisterActivity(pa.GoLint)
+	worker.RegisterActivity(pa.GoTidy)
 	worker.RegisterActivity(pa.DeleteWorkdir)
 
 	return worker.Run(tworker.InterruptCh())

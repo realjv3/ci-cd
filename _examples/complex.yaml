@@ -1,0 +1,2 @@
+# This file conforms to pipeline.PipelineParams
+git_url: "https://github.com/gin-gonic/gin.git"

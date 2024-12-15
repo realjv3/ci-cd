@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
 	tclient "go.temporal.io/sdk/client"
 )
@@ -16,5 +17,6 @@ func NewTemporalClient(ctx context.Context, opts TemporalOptions) (tclient.Clien
 	return tclient.DialContext(ctx, tclient.Options{
 		HostPort:  opts.HostPort,
 		Namespace: opts.Namespace,
+		Logger:    slog.Default(),
 	})
 }

@@ -15,7 +15,10 @@ import (
 )
 
 // PipelineActivity is a collection of Temporal Activities invokeable by PipelineWorkflow.
-type PipelineActivity struct{}
+type PipelineActivity struct {
+	name   string
+	params any
+}
 
 type PipelineActivityMetadata struct {
 	Workdir string
@@ -66,6 +69,90 @@ func (pa *PipelineActivity) GitClone(ctx context.Context, params GitCloneParams)
 		return nil, fmt.Errorf("running git clone command: %w", err)
 	}
 	logger.Info("Git clone command ran successfully", "stdout", stdout.String())
+
+	return result, nil
+}
+
+type GoGenParams struct {
+	Metadata PipelineActivityMetadata
+	Flags    []string
+}
+
+type GoGenResult struct {
+	Metadata      PipelineActivityMetadata
+	ModifiedFiles []string
+}
+
+// GoGen runs `go generate` in the specified directory.
+func (pa *PipelineActivity) GoGen(ctx context.Context, params GoGenParams) (*GoGenResult, error) {
+	logger := activity.GetLogger(ctx)
+	result := &GoGenResult{
+		Metadata:      params.Metadata,
+		ModifiedFiles: []string{},
+	}
+
+	args := []string{"generate"}
+	args = append(args, params.Flags...)
+	args = append(args, "./...")
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = result.Metadata.Workdir
+
+	slog.Info("Running command", "command", "go", "args", args, "dir", result.Metadata.Workdir)
+
+	// Running generators...
+	if err := cmd.Run(); err != nil {
+		logger.Error("Error running go generate command", "error", err)
+		return nil, fmt.Errorf("running go generate command: %w", err)
+	}
+
+	// Uncommitted changes indicate generated code is not up to date and that deploy should fail.
+	output, err := getModifiedFiles(ctx, result.Metadata.Workdir, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(output) > 0 {
+		slog.Warn("There are uncommitted changes", "command", "git", "args", args)
+
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			result.ModifiedFiles = append(result.ModifiedFiles, line)
+		}
+	}
+
+	return result, nil
+}
+
+type GoBuildParams struct {
+	Metadata PipelineActivityMetadata
+	Flags    []string
+}
+
+type GoBuildResult struct {
+	Metadata PipelineActivityMetadata
+	Errors   string
+}
+
+// GoBuild runs `go build` in the specified directory.
+func (pa *PipelineActivity) GoBuild(ctx context.Context, params GoBuildParams) (*GoBuildResult, error) {
+	logger := activity.GetLogger(ctx)
+	result := &GoBuildResult{
+		Metadata: params.Metadata,
+	}
+
+	args := []string{"build"}
+	args = append(args, params.Flags...)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = result.Metadata.Workdir
+
+	slog.Info("Running command", "command", "go", "args", args, "dir", result.Metadata.Workdir)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Error("Error running go build command", "error", err, "output", string(output))
+	}
+
+	result.Errors = string(output)
 
 	return result, nil
 }
@@ -177,6 +264,111 @@ func (pa *PipelineActivity) GoTest(ctx context.Context, params GoTestParams) (*G
 			return nil, fmt.Errorf("running go test command: %w", err)
 		}
 	}
+	return result, nil
+}
+
+type GoLintParams struct {
+	Metadata PipelineActivityMetadata
+	Flags    []string
+}
+
+type GoLintIssue struct {
+	FromLinter string         `json:"FromLinter"`
+	Text       string         `json:"Text"`
+	SourceFile map[string]any `json:"Pos"`
+}
+
+type GoLintResult struct {
+	Metadata PipelineActivityMetadata
+	Issues   []GoLintIssue `json:"Issues"`
+}
+
+// GoLint runs `golangci-lint` in the specified directory.
+func (pa *PipelineActivity) GoLint(ctx context.Context, params GoLintParams) (*GoLintResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	result := &GoLintResult{
+		Metadata: params.Metadata,
+	}
+
+	args := []string{"run", "--out-format=json"}
+	if len(params.Flags) > 0 {
+		args = append(args, "--build-tags", params.Flags[1])
+	}
+	slog.Info("Running command", "command", "golangci-lint", "args", args, "dir", result.Metadata.Workdir)
+
+	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Dir = result.Metadata.Workdir
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// golangci-lint exits with a status code 1 when it detects linting issues
+			if exitErr.ExitCode() == 1 {
+				if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+					return nil, fmt.Errorf("unmarshalling golangci-lint linting issues: %w", err)
+				}
+			}
+		} else {
+			logger.Error("Error running golangci-lint command", "error", err, "stderr", stderr.String(), "stdout", stdout.String())
+			return nil, fmt.Errorf("running golangci-lint command: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
+type GoTidyParams struct {
+	Metadata PipelineActivityMetadata
+}
+
+type GoTidyResult struct {
+	Metadata PipelineActivityMetadata
+	Success  bool
+}
+
+// GoTidy runs `go mod tidy` in the specified directory.
+func (pa *PipelineActivity) GoTidy(ctx context.Context, params GoTidyParams) (*GoTidyResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	result := &GoTidyResult{
+		Metadata: params.Metadata,
+		Success:  true,
+	}
+
+	args := []string{"mod", "tidy"}
+	args = append(args)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = result.Metadata.Workdir
+
+	slog.Info("Running command", "command", "go", "args", args, "dir", result.Metadata.Workdir)
+
+	tidyOut, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Error("`go mod tidy` encountered errors getting dependencies", "error", err, "output", string(tidyOut))
+		return nil, fmt.Errorf("running go mod tidy command: %w", err)
+	}
+
+	// Uncommitted changes to go.mod/go.sum files indicate dependencies were not updated and that deploy should fail.
+	diff, err := getModifiedFiles(ctx, result.Metadata.Workdir, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(diff) > 0 {
+		lines := strings.Split(diff, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "go.mod") || strings.Contains(line, "go.sum") {
+				slog.Warn("There are uncommitted changes to go.mod and go.sum files.", "command", "git", "args", args)
+				result.Success = false
+				break
+			}
+		}
+	}
+
 	return result, nil
 }
 
